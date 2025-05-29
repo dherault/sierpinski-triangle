@@ -3,38 +3,70 @@ type XY = {
   y: number
 }
 
-function handleCanvas(canvas: HTMLCanvasElement) {
+function handleCanvas(canvas: HTMLCanvasElement, mainColor = '#e30b5d') {
   const _ = canvas.getContext('2d')!
 
   const devicePixelRatio = window.devicePixelRatio || 1
+  const backgroundColor = mainColor
+  const strokeColor = 'white'
 
-  canvas.width = canvas.clientWidth * devicePixelRatio
-  canvas.height = canvas.clientHeight * devicePixelRatio
+  canvas.width = window.innerWidth * devicePixelRatio
+  canvas.height = window.innerHeight * devicePixelRatio
 
-  const width = canvas.clientWidth
-  const height = canvas.clientHeight
+  const initialWidth = window.innerWidth
+  const initialHeight = window.innerHeight
 
   _.scale(devicePixelRatio, devicePixelRatio)
 
-  const center: XY = { x: width / 2, y: height / 1.666 }
+  const displayRatio = initialHeight / initialWidth
+  const center: XY = { x: initialWidth / 2, y: initialHeight / 1.666 }
   const scale = 666 * 1.333
-  const nRecursion = 6
+
+  let width = initialWidth
+  let height = initialHeight
+  let xMouse = 0
+  let yMouse = 0
+  let xWindow = 0
+  let yWindow = 0
+  let isPanning = false
+  let isDezooming = false
+  const maxDistanceFactor = 12
 
   /* ---
     Draw
   --- */
 
   function draw() {
-    _.clearRect(0, 0, width, height)
+    _.fillStyle = backgroundColor
+    _.strokeStyle = strokeColor
+    _.fillRect(0, 0, initialWidth, initialHeight)
 
-    function drawIteration(center: XY, index: number) {
-      if (index === nRecursion) return
+    function drawIteration(center: XY, index = 0) {
+      const maxDistance = maxDistanceFactor * width / initialWidth
+
+      if (!isDezooming && maxDistance < 1e-11) {
+        dezoomToStart()
+
+        return
+      }
 
       const { nodes, sides, centers } = getTrianglePoints(center, 0.5 ** index)
 
-      if (index === nRecursion - 1) {
+      // Skip triangles that are completely outside the window
+      if (
+        nodes.every(n => n.x < xWindow)
+        || nodes.every(n => n.x > xWindow + width)
+        || nodes.every(n => n.y < yWindow)
+        || nodes.every(n => n.y > yWindow + height)
+      ) {
+        return
+      }
+
+      if (getVectorNorm(subtractVectors(nodes[0], nodes[1])) < maxDistance) {
         drawTriangle(nodes)
         drawTriangle(sides)
+
+        return
       }
 
       centers.forEach(c => {
@@ -42,15 +74,15 @@ function handleCanvas(canvas: HTMLCanvasElement) {
       })
     }
 
-    drawIteration(center, 0)
+    drawIteration(center)
   }
 
   function drawTriangle(nodes: XY[]) {
-    _.strokeStyle = 'black'
+    _.strokeStyle = strokeColor
     _.beginPath()
-    _.moveTo(nodes[0].x, nodes[0].y)
-    _.lineTo(nodes[1].x, nodes[1].y)
-    _.lineTo(nodes[2].x, nodes[2].y)
+    _.moveTo(scaleX(nodes[0].x), scaleY(nodes[0].y))
+    _.lineTo(scaleX(nodes[1].x), scaleY(nodes[1].y))
+    _.lineTo(scaleX(nodes[2].x), scaleY(nodes[2].y))
     _.closePath()
     _.stroke()
   }
@@ -75,8 +107,16 @@ function handleCanvas(canvas: HTMLCanvasElement) {
     }
   }
 
+  function getVectorNorm(vector: XY): number {
+    return Math.sqrt(vector.x ** 2 + vector.y ** 2)
+  }
+
   function addVectors(a: XY, b: XY): XY {
     return { x: a.x + b.x, y: a.y + b.y }
+  }
+
+  function subtractVectors(a: XY, b: XY): XY {
+    return { x: a.x - b.x, y: a.y - b.y }
   }
 
   function rotateVector(vector: XY, angle: number): XY {
@@ -89,33 +129,93 @@ function handleCanvas(canvas: HTMLCanvasElement) {
     }
   }
 
-  /* ---
-    Update
-  --- */
-
-  function update() {
+  function scaleX(x: number) {
+    return (x - xWindow) * initialWidth / width
   }
 
-  /* ---
-    Visualization loop
-  --- */
+  function scaleY(y: number) {
+    return (y - yWindow) * initialHeight / height
+  }
 
-  let stopped = false
+  function boundXWindow(x: number) {
+    return Math.max(0, Math.min(initialWidth - width, x))
+  }
 
-  function step() {
-    update()
+  function boundYWindow(y: number) {
+    return Math.max(0, Math.min(initialHeight - height, y))
+  }
+
+  function mouseMoveListener(event: MouseEvent) {
+    xMouse = event.clientX * width / initialWidth + xWindow
+    yMouse = event.clientY * height / initialHeight + yWindow
+
+    if (isPanning) {
+      xWindow = boundXWindow(xWindow - event.movementX * width / initialWidth)
+      yWindow = boundYWindow(yWindow - event.movementY * height / initialHeight)
+    }
+
     draw()
-
-    if (stopped) return
-
-    requestAnimationFrame(step)
   }
 
-  requestAnimationFrame(step)
-
-  return () => {
-    stopped = true
+  function mouseDownListener() {
+    isPanning = true
   }
+
+  function mouseUpListener() {
+    isPanning = false
+  }
+
+  function wheelListener(event: WheelEvent) {
+    event.preventDefault()
+
+    isDezooming = false
+
+    zoom(1 + event.deltaY * 0.0006)
+    draw()
+  }
+
+  function zoom(factor: number) {
+    width = Math.max(0, Math.min(initialWidth, width * factor))
+    height = width * displayRatio
+    xWindow = boundXWindow(xMouse - (xMouse - xWindow) * factor)
+    yWindow = boundYWindow(yMouse - (yMouse - yWindow) * factor)
+  }
+
+  function dezoomToStart() {
+    if (isDezooming || width === initialWidth) return
+
+    isDezooming = true
+    removeEventListeners()
+
+    const intervalId = setInterval(() => {
+      zoom(1.01)
+      draw()
+
+      if (width === initialWidth) {
+        clearInterval(intervalId)
+        addEventListeners()
+      }
+    }, 6)
+  }
+
+  function addEventListeners() {
+    document.addEventListener('mousemove', mouseMoveListener, { passive: false })
+    document.addEventListener('mousedown', mouseDownListener, { passive: false })
+    document.addEventListener('mouseup', mouseUpListener, { passive: false })
+    document.addEventListener('wheel', wheelListener, { passive: false })
+  }
+
+  function removeEventListeners() {
+    document.removeEventListener('mousemove', mouseMoveListener)
+    document.removeEventListener('mousedown', mouseDownListener)
+    document.removeEventListener('mouseup', mouseUpListener)
+    document.removeEventListener('wheel', wheelListener)
+  }
+
+  addEventListeners()
+  draw()
+
+  return removeEventListeners
 }
 
 export default handleCanvas
